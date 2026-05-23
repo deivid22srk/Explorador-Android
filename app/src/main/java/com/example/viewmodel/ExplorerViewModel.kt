@@ -11,6 +11,8 @@ import com.example.model.ZipFileSystem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.zip.ZipFile
 
@@ -264,8 +266,8 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         refreshFileSystem()
     }
 
-    fun deleteItems(items: List<VirtualItem>) {
-        if (items.isEmpty()) return
+    suspend fun deleteItems(items: List<VirtualItem>) = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext
         items.forEach { item ->
             // Prevent deletion of virtual files inside a zip
             if (!item.path.contains("::")) {
@@ -293,9 +295,9 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
         _isMoveOperation.value = false
     }
 
-    fun pasteClipboard(targetParentPath: String) {
+    suspend fun pasteClipboard(targetParentPath: String) = withContext(Dispatchers.IO) {
         val itemsToPaste = _clipboardItems.value
-        if (itemsToPaste.isEmpty() || targetParentPath.contains("::")) return
+        if (itemsToPaste.isEmpty() || targetParentPath.contains("::")) return@withContext
 
         itemsToPaste.forEach { sourceItem ->
             if (sourceItem.path.contains("::")) {
@@ -358,10 +360,40 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     // Direct Extraction of the selected archive
-    fun extractAllArchive(zipFilePath: String, targetFolderPath: String): Boolean {
+    suspend fun extractAllArchive(zipFilePath: String, targetFolderPath: String): Boolean = withContext(Dispatchers.IO) {
         val result = ZipFileSystem.extractAll(zipFilePath, targetFolderPath)
         refreshFileSystem()
-        return result
+        result
+    }
+
+    // Direct Extraction of the selected archive via Foreground Service
+    fun startExtractionService(archivePath: String, targetFolderPath: String) {
+        val context = getApplication<Application>()
+        val intent = android.content.Intent(context, com.example.service.ExtractionService::class.java).apply {
+            action = com.example.service.ExtractionService.ACTION_START_EXTRACTION
+            putExtra(com.example.service.ExtractionService.EXTRA_ARCHIVE_PATH, archivePath)
+            putExtra(com.example.service.ExtractionService.EXTRA_TARGET_FOLDER, targetFolderPath)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            context.startForegroundService(intent)
+        } else {
+            context.startService(intent)
+        }
+    }
+
+    // Compress item to a zip/7z archive
+    suspend fun compressItem(item: VirtualItem, extension: String): Boolean = withContext(Dispatchers.IO) {
+        if (item.path.contains("::")) return@withContext false
+        val sourceFile = File(item.path)
+        if (!sourceFile.exists()) return@withContext false
+
+        val parentDir = sourceFile.parent ?: return@withContext false
+        val baseName = if (sourceFile.isDirectory) sourceFile.name else sourceFile.nameWithoutExtension.ifEmpty { sourceFile.name }
+        val targetZipPath = "$parentDir/$baseName.$extension"
+
+        val success = ZipFileSystem.zip(item.path, targetZipPath)
+        refreshFileSystem()
+        success
     }
 
     // Rename an item
@@ -375,7 +407,7 @@ class ExplorerViewModel(application: Application) : AndroidViewModel(application
     }
 
     // Clipboard Paste from Left Pane to Right Pane (or vice versa) in Dual Pane Mode
-    fun mirrorClipboardToOtherPane() {
+    suspend fun mirrorClipboardToOtherPane() {
         val sourcePane = _activePane.value
         val sourcePath = if (sourcePane == 0) _currentPathLeft.value else _currentPathRight.value
         val targetPath = if (sourcePane == 0) _currentPathRight.value else _currentPathLeft.value

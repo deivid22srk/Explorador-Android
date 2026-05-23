@@ -7,6 +7,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -67,6 +69,10 @@ import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.SwapHoriz
 import androidx.compose.material.icons.filled.WatchLater
 import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Error
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -140,6 +146,8 @@ fun ExplorerApp(
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isSearchActive by viewModel.isSearchActive.collectAsState()
 
+    val extractionState by com.example.model.ExtractionManager.progressState.collectAsState()
+
     // Screen-level state variables
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
@@ -147,6 +155,13 @@ fun ExplorerApp(
     var detailItem by remember { mutableStateOf<VirtualItem?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameItem by remember { mutableStateOf<VirtualItem?>(null) }
+    var showBottomSheetItem by remember { mutableStateOf<VirtualItem?>(null) }
+    var bottomSheetItemForRender by remember { mutableStateOf<VirtualItem?>(null) }
+    androidx.compose.runtime.LaunchedEffect(showBottomSheetItem) {
+        if (showBottomSheetItem != null) {
+            bottomSheetItemForRender = showBottomSheetItem
+        }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
@@ -165,6 +180,19 @@ fun ExplorerApp(
     ) { results ->
         hasPermission = results.values.all { it }
         viewModel.refreshFileSystem()
+    }
+
+    val notificationPermissionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            val permissionCheck = context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            if (permissionCheck != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
     }
 
     val requestPermissionAction = {
@@ -536,8 +564,10 @@ fun ExplorerApp(
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column(modifier = Modifier.weight(1f)) {
+                                        val activeZipExt = activeZipPath.substringAfterLast(".").uppercase()
+                                        val titleLabel = if (activeZipExt == "7Z") "Dentro do Arquivo 7Z" else if (activeZipExt == "RAR") "Dentro do Arquivo RAR" else "Dentro do Arquivo ZIP"
                                         Text(
-                                            text = "Dentro do Arquivo ZIP",
+                                            text = titleLabel,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 12.sp,
                                             color = MaterialTheme.colorScheme.onTertiaryContainer
@@ -553,14 +583,7 @@ fun ExplorerApp(
                                     Button(
                                         onClick = {
                                             val targetDir = java.io.File(activeZipPath).parent ?: viewModel.privateAppPath
-                                            val success = viewModel.extractAllArchive(activeZipPath, targetDir)
-                                            coroutineScope.launch {
-                                                if (success) {
-                                                    snackbarHostState.showSnackbar("Arquivo descompactado em: $targetDir")
-                                                } else {
-                                                    snackbarHostState.showSnackbar("Erro ao descompactar.")
-                                                }
-                                            }
+                                            viewModel.startExtractionService(activeZipPath, targetDir)
                                         },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = MaterialTheme.colorScheme.tertiary,
@@ -621,8 +644,8 @@ fun ExplorerApp(
                                         }
                                     }
                                     IconButton(onClick = {
-                                        viewModel.deleteItems(selectedItems.toList())
                                         coroutineScope.launch {
+                                            viewModel.deleteItems(selectedItems.toList())
                                             snackbarHostState.showSnackbar("Itens excluídos com sucesso!")
                                         }
                                     }) {
@@ -646,20 +669,17 @@ fun ExplorerApp(
                                             Text("Detalhes", fontSize = 10.sp)
                                         }
                                     }
-                                    val containsZip = selectedItems.size == 1 && selectedItems.first().name.endsWith(".zip", ignoreCase = true)
-                                    if (containsZip) {
+                                    val containsArchive = selectedItems.size == 1 && (
+                                        selectedItems.first().name.endsWith(".zip", ignoreCase = true) ||
+                                        selectedItems.first().name.endsWith(".7z", ignoreCase = true) ||
+                                        selectedItems.first().name.endsWith(".rar", ignoreCase = true)
+                                    )
+                                    if (containsArchive) {
                                         IconButton(onClick = {
-                                            val zipItem = selectedItems.first()
+                                            val archiveItem = selectedItems.first()
                                             val currentFolder = activePath
-                                            val success = viewModel.extractAllArchive(zipItem.path, currentFolder)
+                                            viewModel.startExtractionService(archiveItem.path, currentFolder)
                                             viewModel.clearSelection()
-                                            coroutineScope.launch {
-                                                if (success) {
-                                                    snackbarHostState.showSnackbar("Arquivo ZIP extraído com sucesso na pasta atual!")
-                                                } else {
-                                                    snackbarHostState.showSnackbar("Erro ao extrair arquivo ZIP.")
-                                                }
-                                            }
                                         }) {
                                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                                 Icon(imageVector = Icons.Default.Unarchive, contentDescription = "Extrair")
@@ -747,7 +767,9 @@ fun ExplorerApp(
                                                     } else {
                                                         if (clickedItem.isDirectory) {
                                                             viewModel.navigateTo(clickedItem.path, 0)
-                                                        } else if (clickedItem.name.endsWith(".zip", ignoreCase = true)) {
+                                                        } else if (clickedItem.name.endsWith(".zip", ignoreCase = true) ||
+                                                                   clickedItem.name.endsWith(".7z", ignoreCase = true) ||
+                                                                   clickedItem.name.endsWith(".rar", ignoreCase = true)) {
                                                             viewModel.navigateTo("${clickedItem.path}::/", 0)
                                                         } else {
                                                             // Show details or file snackbar
@@ -758,7 +780,7 @@ fun ExplorerApp(
                                                     }
                                                 },
                                                 onItemLongClick = { clickedItem ->
-                                                    viewModel.toggleSelectItem(clickedItem)
+                                                    showBottomSheetItem = clickedItem
                                                 }
                                             )
                                         }
@@ -864,7 +886,9 @@ fun ExplorerApp(
                                                                 } else {
                                                                     if (clickedItem.isDirectory) {
                                                                         viewModel.navigateTo(clickedItem.path, 0)
-                                                                    } else if (clickedItem.name.endsWith(".zip", ignoreCase = true)) {
+                                                                    } else if (clickedItem.name.endsWith(".zip", ignoreCase = true) ||
+                                                                               clickedItem.name.endsWith(".7z", ignoreCase = true) ||
+                                                                               clickedItem.name.endsWith(".rar", ignoreCase = true)) {
                                                                         viewModel.navigateTo("${clickedItem.path}::/", 0)
                                                                     } else {
                                                                         coroutineScope.launch {
@@ -875,7 +899,7 @@ fun ExplorerApp(
                                                             },
                                                             onItemLongClick = { clickedItem ->
                                                                 viewModel.setActivePane(0)
-                                                                viewModel.toggleSelectItem(clickedItem)
+                                                                showBottomSheetItem = clickedItem
                                                             }
                                                         )
                                                     }
@@ -972,7 +996,9 @@ fun ExplorerApp(
                                                                 } else {
                                                                     if (clickedItem.isDirectory) {
                                                                         viewModel.navigateTo(clickedItem.path, 1)
-                                                                    } else if (clickedItem.name.endsWith(".zip", ignoreCase = true)) {
+                                                                    } else if (clickedItem.name.endsWith(".zip", ignoreCase = true) ||
+                                                                               clickedItem.name.endsWith(".7z", ignoreCase = true) ||
+                                                                               clickedItem.name.endsWith(".rar", ignoreCase = true)) {
                                                                         viewModel.navigateTo("${clickedItem.path}::/", 1)
                                                                     } else {
                                                                         coroutineScope.launch {
@@ -983,7 +1009,7 @@ fun ExplorerApp(
                                                             },
                                                             onItemLongClick = { clickedItem ->
                                                                 viewModel.setActivePane(1)
-                                                                viewModel.toggleSelectItem(clickedItem)
+                                                                showBottomSheetItem = clickedItem
                                                             }
                                                         )
                                                     }
@@ -1040,8 +1066,8 @@ fun ExplorerApp(
                                     // Special cloning file-transfer swapping operation (Swap items from active pane down to the other side!)
                                     IconButton(
                                         onClick = {
-                                            viewModel.mirrorClipboardToOtherPane()
                                             coroutineScope.launch {
+                                                viewModel.mirrorClipboardToOtherPane()
                                                 snackbarHostState.showSnackbar("Sincronizando/Copiando conteúdo para o painel vizinho!")
                                             }
                                         },
@@ -1124,8 +1150,8 @@ fun ExplorerApp(
                                         onClick = {
                                             val currentPane = if (explorerStyle == ExplorerViewModel.STYLE_SINGLE_PANE) 0 else activePane
                                             val targetParent = if (currentPane == 0) pathLeft else pathRight
-                                            viewModel.pasteClipboard(targetParent)
                                             coroutineScope.launch {
+                                                viewModel.pasteClipboard(targetParent)
                                                 snackbarHostState.showSnackbar("Itens mesclados na pasta de destino!")
                                             }
                                         },
@@ -1511,6 +1537,15 @@ fun ExplorerApp(
                     )
                 }
 
+                // EXTRACTION PROGRESS DIALOG MODAL
+                ExtractionProgressDialog(
+                    progressState = extractionState,
+                    onDismiss = {
+                        com.example.model.ExtractionManager.reset()
+                        viewModel.refreshFileSystem()
+                    }
+                )
+
                 // D. RENAME DIALOG MODAL
                 if (showRenameDialog && renameItem != null) {
                     val item = renameItem!!
@@ -1547,6 +1582,196 @@ fun ExplorerApp(
                             }
                         }
                     )
+                }
+
+                // E. BOTTOM SHEET MENU (LONG PRESS ACTION OVERLAY)
+                AnimatedVisibility(
+                    visible = showBottomSheetItem != null,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    val item = bottomSheetItemForRender ?: return@AnimatedVisibility
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.5f))
+                            .clickable(
+                                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                indication = null
+                            ) { showBottomSheetItem = null }
+                    ) {
+                        AnimatedVisibility(
+                            visible = showBottomSheetItem != null,
+                            enter = slideInVertically(initialOffsetY = { it }),
+                            exit = slideOutVertically(targetOffsetY = { it }),
+                            modifier = Modifier.align(Alignment.BottomCenter)
+                        ) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable(
+                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                        indication = null
+                                    ) { /* Evita que toques internos fechem o menu */ }
+                                    .navigationBarsPadding(),
+                                shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.surface
+                                ),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 16.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(vertical = 12.dp)
+                                            .width(40.dp)
+                                            .height(4.dp)
+                                            .background(
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                                                shape = RoundedCornerShape(2.dp)
+                                            )
+                                            .align(Alignment.CenterHorizontally)
+                                    )
+
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 24.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        val icon = if (item.isDirectory) Icons.Default.Folder else Icons.Default.Description
+                                        Icon(
+                                            imageVector = icon,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(12.dp))
+                                        Column {
+                                            Text(
+                                                text = item.name,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 16.sp,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = if (item.isDirectory) "Pasta • ${item.itemDetails}" else "Arquivo • ${item.itemDetails}",
+                                                fontSize = 12.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+
+                                    HorizontalDivider(
+                                        modifier = Modifier.padding(vertical = 8.dp),
+                                        color = MaterialTheme.colorScheme.outlineVariant
+                                    )
+
+                                    val options = listOf(
+                                        Triple("Compactar para *.zip", Icons.Default.FolderZip, "ZIP"),
+                                        Triple("Compactar para *.7z", Icons.Default.FolderZip, "7Z"),
+                                        Triple("Compactar para zip", Icons.Default.FolderZip, "COMPRESS_ZIP"),
+                                        Triple("Copiar", Icons.Default.ContentCopy, "COPY"),
+                                        Triple("Recortar", Icons.Default.ContentCut, "CUT"),
+                                        Triple("Excluir", Icons.Default.Delete, "DELETE"),
+                                        Triple("Renomear", Icons.Default.Edit, "RENAME"),
+                                        Triple("Informações", Icons.Default.Info, "INFO")
+                                    )
+
+                                    options.forEach { (label, icon, action) ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    showBottomSheetItem = null
+                                                    when (action) {
+                                                        "ZIP" -> {
+                                                            coroutineScope.launch {
+                                                                val success = viewModel.compressItem(item, "zip")
+                                                                if (success) {
+                                                                    snackbarHostState.showSnackbar("Item compactado para *.zip com sucesso!")
+                                                                } else {
+                                                                    snackbarHostState.showSnackbar("Erro ao compactar para ZIP.")
+                                                                }
+                                                            }
+                                                        }
+                                                        "7Z" -> {
+                                                            coroutineScope.launch {
+                                                                val success = viewModel.compressItem(item, "7z")
+                                                                if (success) {
+                                                                    snackbarHostState.showSnackbar("Item compactado para *.7z com sucesso!")
+                                                                } else {
+                                                                    snackbarHostState.showSnackbar("Erro ao compactar para 7Z.")
+                                                                }
+                                                            }
+                                                        }
+                                                        "COMPRESS_ZIP" -> {
+                                                            coroutineScope.launch {
+                                                                val success = viewModel.compressItem(item, "zip")
+                                                                if (success) {
+                                                                    snackbarHostState.showSnackbar("Item compactado para zip com sucesso!")
+                                                                } else {
+                                                                    snackbarHostState.showSnackbar("Erro ao compactar para zip.")
+                                                                }
+                                                            }
+                                                        }
+                                                        "COPY" -> {
+                                                            viewModel.startCopyOperation(listOf(item))
+                                                            coroutineScope.launch {
+                                                                snackbarHostState.showSnackbar("Item '${item.name}' copiado para área de transferência!")
+                                                            }
+                                                        }
+                                                        "CUT" -> {
+                                                            viewModel.startMoveOperation(listOf(item))
+                                                            coroutineScope.launch {
+                                                                snackbarHostState.showSnackbar("Item '${item.name}' recortado para área de transferência!")
+                                                            }
+                                                        }
+                                                        "DELETE" -> {
+                                                            coroutineScope.launch {
+                                                                viewModel.deleteItems(listOf(item))
+                                                                snackbarHostState.showSnackbar("Item excluído com sucesso!")
+                                                            }
+                                                        }
+                                                        "RENAME" -> {
+                                                            renameItem = item
+                                                            showRenameDialog = true
+                                                        }
+                                                        "INFO" -> {
+                                                            detailItem = item
+                                                            showDetailsDialog = true
+                                                        }
+                                                    }
+                                                }
+                                                .padding(horizontal = 24.dp, vertical = 12.dp)
+                                                .testTag("bs_option_${action.lowercase()}"),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                imageVector = icon,
+                                                contentDescription = label,
+                                                tint = if (action == "DELETE") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(16.dp))
+                                            Text(
+                                                text = label,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = if (action == "DELETE") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1924,5 +2149,176 @@ fun filterAndSortFiles(
         "DATE" -> list.sortedWith(compareByDescending<VirtualItem> { it.isDirectory }.thenBy { it.lastModified })
         "SIZE" -> list.sortedWith(compareByDescending<VirtualItem> { it.isDirectory }.thenBy { it.itemDetails })
         else -> list.sortedWith(compareByDescending<VirtualItem> { it.isDirectory }.thenBy { it.name.lowercase() })
+    }
+}
+
+@Composable
+fun ExtractionProgressDialog(
+    progressState: com.example.model.ExtractionManager.ProgressState,
+    onDismiss: () -> Unit
+) {
+    when (progressState) {
+        is com.example.model.ExtractionManager.ProgressState.Running -> {
+            androidx.compose.ui.window.Dialog(onDismissRequest = { /* Prevent dismiss during active extraction */ }) {
+                Surface(
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .testTag("extraction_progress_dialog")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = "Extraindo Arquivo",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier.size(90.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                progress = progressState.progress,
+                                strokeWidth = 6.dp,
+                                modifier = Modifier.fillMaxSize(),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
+                            )
+                            Text(
+                                text = "${(progressState.progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        Text(
+                            text = progressState.archiveName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text = "Extraindo: ${progressState.currentFileName.substringAfterLast('/')}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth(),
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text(
+                            text = "${progressState.extractedCount} de ${progressState.totalCount} arquivos",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+        }
+        is com.example.model.ExtractionManager.ProgressState.Success -> {
+            androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+                Surface(
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .testTag("extraction_success_dialog")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Sucesso",
+                            tint = Color(0xFF4CAF50),
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Extração Concluída",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Os arquivos de '${progressState.archiveName}' foram extraídos com sucesso na pasta atual!",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Fechar")
+                        }
+                    }
+                }
+            }
+        }
+        is com.example.model.ExtractionManager.ProgressState.Error -> {
+            androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+                Surface(
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .testTag("extraction_error_dialog")
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Error,
+                            contentDescription = "Erro",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(64.dp)
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Erro na Extração",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = progressState.message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(modifier = Modifier.height(24.dp))
+                        Button(
+                            onClick = onDismiss,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                        ) {
+                            Text("Fechar")
+                        }
+                    }
+                }
+            }
+        }
+        else -> { /* No-op for Idle */ }
     }
 }
