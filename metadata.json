@@ -1,0 +1,6 @@
+{
+  "name": "Explorador",
+  "description": "Um gerenciador de arquivos em Material You 3 expressivo com suporte a Painel Único e Painel Duplo.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

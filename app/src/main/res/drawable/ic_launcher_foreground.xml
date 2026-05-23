@@ -1,0 +1,35 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Folder shadow and bottom container -->
+    <path
+        android:fillColor="#FFFFB300"
+        android:pathData="M24,32 C20.7,32 18,34.7 18,38 L18,70 C18,73.3 20.7,76 24,76 L84,76 C87.3,76 90,73.3 90,70 L90,44 C90,40.7 87.3,38 84,38 L56,38 L48,30 L24,30 Z" />
+
+    <!-- Paper peeking from inside folder tab -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M34,22 L74,22 C77.3,22 80,24.7 80,28 L80,48 L34,48 Z" />
+
+    <!-- Front panel flap for visual overlap depth -->
+    <path
+        android:fillColor="#FFFFC107"
+        android:pathData="M18,46 L18,70 C18,73.3 20.7,76 24,76 L84,76 C87.3,76 90,73.3 90,70 L90,46 Z" />
+
+    <!-- File symbol internal stripes -->
+    <path
+        android:fillColor="#FF212121"
+        android:pathData="M40,28 L68,28"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFB0BEC5" />
+
+    <path
+        android:fillColor="#FF212121"
+        android:pathData="M40,34 L62,34"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#FFB0BEC5" />
+</vector>
